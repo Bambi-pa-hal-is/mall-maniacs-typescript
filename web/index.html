@@ -2,7 +2,12 @@
 <html lang="sv">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#111111" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <title>Mall Maniacs</title>
     <style>
       :root { --bg: #111; --panel: rgba(16, 16, 20, 0.86); --text: #f2f2f2; --accent: #e3262b; --muted: #9a9aa2; }
@@ -24,6 +29,29 @@
       #quiz .keys { color: #ffd400; font-size: 16px; }
       #pickup { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; image-rendering: auto; }
       .retro #pickup, #pickup.retro { image-rendering: pixelated; }
+      #loader { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: var(--bg); z-index: 10; }
+      #loader .spinner { width: 56px; height: 56px; border: 6px solid rgba(255, 255, 255, 0.15); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; }
+      #loader .text { color: var(--muted); font-size: 13px; }
+      #loader .bar { width: min(320px, 70vw); height: 4px; background: rgba(255, 255, 255, 0.12); border-radius: 2px; overflow: hidden; }
+      #loader .bar div { height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      /* Touch controls (src/touch.ts) */
+      body.touch { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+      body.touch #hud { display: none !important; }
+      #touch { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+      #touch .btn { position: absolute; pointer-events: auto; touch-action: none; border: 2px solid rgba(255, 255, 255, 0.55); background: rgba(20, 20, 26, 0.45); color: #fff; border-radius: 50%; font: 700 15px system-ui, sans-serif; width: 64px; height: 64px; padding: 0; }
+      #touch .btn.down { background: rgba(227, 38, 43, 0.75); }
+      #touch .action { right: calc(24px + env(safe-area-inset-right)); bottom: 28px; width: 84px; height: 84px; font-size: 28px; }
+      #touch .punch { right: calc(124px + env(safe-area-inset-right)); bottom: 40px; }
+      #touch .ok { right: calc(24px + env(safe-area-inset-right)); bottom: 28px; width: 84px; height: 84px; font-size: 20px; }
+      #touch .yes { right: calc(24px + env(safe-area-inset-right)); bottom: 132px; }
+      #touch .no { right: calc(100px + env(safe-area-inset-right)); bottom: 132px; }
+      #touch .esc { right: calc(12px + env(safe-area-inset-right)); top: 12px; width: auto; height: 34px; border-radius: 17px; padding: 0 12px; font-size: 13px; }
+      #touch .kbd { right: calc(124px + env(safe-area-inset-right)); bottom: 40px; font-size: 26px; }
+      #touch .stick { position: absolute; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.4); background: rgba(20, 20, 26, 0.25); }
+      #touch .knob { position: absolute; left: 32px; top: 32px; width: 56px; height: 56px; border-radius: 50%; background: rgba(255, 255, 255, 0.55); }
+      #touch .text { position: absolute; left: -1000px; top: 0; width: 10px; opacity: 0; pointer-events: none; }
+      #touch .rotate { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; background: rgba(0, 0, 0, 0.88); color: #fff; font-size: 18px; pointer-events: auto; }
       .hidden { display: none !important; }
     </style>
   </head>
@@ -33,6 +61,7 @@
     <div id="status" class="panel hidden"></div>
     <div id="quiz" class="panel hidden"></div>
     <img id="pickup" class="hidden" alt="" />
+    <div id="loader"><div class="spinner"></div><div class="text">Laddar spelet…</div><div class="bar"><div></div></div></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

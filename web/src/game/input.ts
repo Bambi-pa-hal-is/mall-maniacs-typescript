@@ -16,6 +16,8 @@ export interface Controls {
   command?: PlayerCommand;
   /** Quiz answer: true = J (ja), false = N (nej). Keys J/Y and N, as in mm_key 0x40db80. */
   answer?: boolean;
+  /** [I] Punch (E / Ctrl), only with the unofficial punch rule. */
+  punch?: boolean;
 }
 
 export class Keyboard {
@@ -53,6 +55,7 @@ export class Keyboard {
       throttle: (up ? 1 : 0) - (back ? 1 : 0),
       action: this.consume('Space'),
       answer: this.consume('KeyJ') || this.consume('KeyY') ? true : this.consume('KeyN') ? false : undefined,
+      punch: this.consume('KeyE') || this.consume('ControlLeft') || this.consume('ControlRight'),
     };
   }
 }

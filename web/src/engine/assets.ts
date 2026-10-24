@@ -25,3 +25,22 @@ export function loadGameFile(path: string): Promise<ArrayBuffer> {
   }
   return p;
 }
+
+/**
+ * Fetch every game file into the cache (when the page loads), so menus and levels never wait on
+ * the network. Reports progress as files done / total.
+ */
+export async function preloadGameFiles(onProgress: (done: number, total: number) => void, concurrency = 8): Promise<void> {
+  const files = Object.values(manifest.files);
+  let next = 0;
+  let done = 0;
+  onProgress(0, files.length);
+  const worker = async () => {
+    while (next < files.length) {
+      const file = files[next++];
+      await loadGameFile(file).catch(() => null);
+      onProgress(++done, files.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
+}

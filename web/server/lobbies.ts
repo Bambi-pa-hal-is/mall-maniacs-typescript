@@ -5,9 +5,11 @@ import {
   MAX_PLAYERS,
   NAME_LENGTH,
   type ClientMessage,
+  type CustomPick,
   type LobbyPlayer,
   type LobbyState,
   type NetInput,
+  type NetRules,
   type PublicLobby,
   type ServerMessage,
 } from '../src/net/protocol.ts';
@@ -32,6 +34,7 @@ interface Lobby {
   members: Member[];
   race: Race | null;
   public: boolean;
+  rules: NetRules;
 }
 
 interface Race {
@@ -55,6 +58,12 @@ export const READY_TIMEOUT_MS = 60000;
 
 const clamp = (v: unknown, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.trunc(Number(v) || 0)));
 const unit = (v: unknown) => clamp(v, -1, 1);
+/** A custom character pick: a short id and three stats of 1-5, or nothing. */
+const cleanCustom = (c: unknown): CustomPick | undefined => {
+  const o = c as Partial<CustomPick> | null;
+  if (!o || typeof o.id !== 'string' || !/^[a-z0-9_-]{1,24}$/.test(o.id) || !Array.isArray(o.stats)) return undefined;
+  return { id: o.id, stats: [clamp(o.stats[0], 1, 5), clamp(o.stats[1], 1, 5), clamp(o.stats[2], 1, 5)] };
+};
 const cleanName = (s: unknown) =>
   String(s ?? '')
     .replace(/[^a-zA-Z0-9åäöÅÄÖ. _]/g, '')
@@ -82,9 +91,9 @@ export class LobbyServer {
     switch (msg?.t) {
       case 'create': {
         if (at) this.leave(conn);
-        const lobby: Lobby = { code: this.newCode(), host: 0, mall: clamp(msg.mall, 0, 4), mode: clamp(msg.mode, 2, 4), members: [], race: null, public: msg.public === true };
+        const lobby: Lobby = { code: this.newCode(), host: 0, mall: clamp(msg.mall, 0, 4), mode: clamp(msg.mode, 2, 4), members: [], race: null, public: msg.public === true, rules: { punch: false, grabCarts: false } };
         this.lobbies.set(lobby.code, lobby);
-        const member = this.add(lobby, conn, msg.name, msg.character);
+        const member = this.add(lobby, conn, msg.name, msg.character, msg.custom);
         lobby.host = member.id;
         this.broadcastLobby(lobby);
         return;
@@ -95,23 +104,29 @@ export class LobbyServer {
         if (!lobby) return conn.send({ t: 'error', reason: 'nolobby' });
         if (lobby.race) return conn.send({ t: 'error', reason: 'racing' });
         if (lobby.members.length >= MAX_PLAYERS) return conn.send({ t: 'error', reason: 'full' });
-        this.add(lobby, conn, msg.name, msg.character);
+        this.add(lobby, conn, msg.name, msg.character, msg.custom);
         this.broadcastLobby(lobby);
         return;
       }
       case 'leave':
         this.leave(conn);
         return;
+      case 'rules': {
+        if (!at || at.lobby.host !== at.member.id || at.lobby.race) return;
+        at.lobby.rules = { punch: msg.rules?.punch === true, grabCarts: msg.rules?.grabCarts === true };
+        this.broadcastLobby(at.lobby);
+        return;
+      }
       case 'list':
         conn.send({ t: 'lobbies', lobbies: this.publicLobbies() });
         return;
       case 'start': {
         if (!at || at.lobby.host !== at.member.id || at.lobby.race) return;
         const lobby = at.lobby;
-        const slots = lobby.members.map(({ id, name, character }) => ({ id, name, character }));
+        const slots = lobby.members.map(({ id, name, character, custom }) => ({ id, name, character, ...(custom ? { custom } : {}) }));
         lobby.race = { slots, ready: new Set(), running: false, frame: 0, latest: new Map(), pressed: new Map(), sums: new Map(), desynced: false };
         const seed = Math.floor(this.random() * 0x100000000) >>> 0;
-        for (const m of lobby.members) m.conn.send({ t: 'start', seed, mall: lobby.mall, mode: lobby.mode, players: slots });
+        for (const m of lobby.members) m.conn.send({ t: 'start', seed, mall: lobby.mall, mode: lobby.mode, players: slots, rules: lobby.rules });
         const race = lobby.race;
         setTimeout(() => {
           if (lobby.race === race && !race.running) this.go(lobby);
@@ -129,7 +144,7 @@ export class LobbyServer {
         const race = at?.lobby.race;
         if (!at || !race) return;
         const i = Array.isArray(msg.i) ? msg.i : [];
-        const flags = clamp(i[2], 0, 7);
+        const flags = clamp(i[2], 0, 15);
         race.latest.set(at.member.id, [unit(i[0]), unit(i[1]), 0]);
         if (flags) race.pressed.set(at.member.id, (race.pressed.get(at.member.id) ?? 0) | flags);
         return;
@@ -202,8 +217,10 @@ export class LobbyServer {
     step();
   }
 
-  private add(lobby: Lobby, conn: Connection, name: unknown, character: unknown): Member {
+  private add(lobby: Lobby, conn: Connection, name: unknown, character: unknown, custom: unknown): Member {
     const member: Member = { id: this.nextId++, name: cleanName(name), character: clamp(character, 0, 9), conn };
+    const pick = cleanCustom(custom);
+    if (pick) member.custom = pick;
     lobby.members.push(member);
     this.where.set(conn, { lobby, member });
     return member;
@@ -237,9 +254,9 @@ export class LobbyServer {
   }
 
   private broadcastLobby(lobby: Lobby): void {
-    const players = lobby.members.map(({ id, name, character }) => ({ id, name, character }));
+    const players = lobby.members.map(({ id, name, character, custom }) => ({ id, name, character, ...(custom ? { custom } : {}) }));
     for (const m of lobby.members) {
-      const state: LobbyState = { code: lobby.code, you: m.id, host: lobby.host, mall: lobby.mall, mode: lobby.mode, players, racing: lobby.race !== null, public: lobby.public };
+      const state: LobbyState = { code: lobby.code, you: m.id, host: lobby.host, mall: lobby.mall, mode: lobby.mode, players, racing: lobby.race !== null, public: lobby.public, rules: lobby.rules };
       m.conn.send({ t: 'lobby', lobby: state });
     }
   }

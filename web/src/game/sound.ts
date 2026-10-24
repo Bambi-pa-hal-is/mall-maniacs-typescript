@@ -24,6 +24,7 @@ export const SND = {
   blast: 7, // Blast
   bounce: 20, // Bounce
   throw: 21, // Throw
+  punchHit: 22, // Throw-Hit
 } as const;
 
 /**
@@ -126,6 +127,11 @@ export class LevelSound {
           // Positional for every player: attached to the walker / the cart (0x426fd0, 0x427730).
           const at = e === 'cart-launch' ? p.cartPos : p.pos;
           this.audio.emitter(e === 'splash' ? SND.splash : SND.blast, false, 1500)?.setPosition(this.root, at.x, at.y - 600, at.z);
+          continue;
+        }
+        if (e === 'punched') {
+          // [I] Unofficial punch rule: a hit plays Throw-Hit; the swing itself is silent.
+          this.audio.emitter(SND.punchHit, false, 1500)?.setPosition(this.root, p.pos.x, p.pos.y - 400, p.pos.z);
           continue;
         }
         if (p !== this.human) continue;

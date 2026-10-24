@@ -3,8 +3,9 @@ import type { Atlas, Hud2D, HudFont } from '../engine/hud2d';
 import { textWidth } from '../formats/font';
 import { GameMode, MODE_NAMES } from '../game/modes';
 import type { Records, RecordTable } from '../game/records';
-import { CHARACTER_STATS, characterUnlocked, mallUnlocked, MALL_COUNT, type GameChoice, type Progress } from '../game/setup';
-import { CODE_ALPHABET, CODE_LENGTH, MAX_PLAYERS, NAME_LENGTH as NET_NAME_LENGTH, type ErrorReason, type LobbyState, type PublicLobby } from '../net/protocol';
+import { characterUnlocked, mallUnlocked, MALL_COUNT, type GameChoice, type Progress } from '../game/setup';
+import { characterStats, characterTotal, customById, customCharacter, faceSprite, type CustomCharacter } from '../game/customCharacters';
+import { CODE_ALPHABET, CODE_LENGTH, MAX_PLAYERS, NAME_LENGTH as NET_NAME_LENGTH, type ErrorReason, type LobbyState, type NetRules, type PublicLobby } from '../net/protocol';
 import type { CharacterPreview } from './charPreview';
 import type { MenuFlag } from './flag';
 import type { MenuAssets } from './menuAssets';
@@ -33,6 +34,8 @@ export interface MenuHost {
   netList(): void;
   netJoin(code: string, name: string, character: number): void;
   netStart(): void;
+  /** Host only: switch the unofficial rules (echoed back in the lobby state). */
+  netRules(rules: NetRules): void;
   netLeave(): void;
 }
 
@@ -59,11 +62,29 @@ export const CHARACTER_NAMES = [
   'Kalle Kallsup',
   'Kajsa Komet',
 ];
+/** Menu name of a character, custom ones included. */
+export function characterName(index: number): string {
+  return customCharacter(index)?.name ?? CHARACTER_NAMES[index] ?? '';
+}
 const DIFFICULTY_NAMES = ['Lätt', 'Medium', 'Svårt'];
 /** Mall names of the network pages (0x450100). */
 const NET_MALL_NAMES = ['ICA Småköp', 'ICA Eken', 'ICA Draken', 'ICA Sjöhästen', 'ICA Raketen'];
 /** Network page (0x420190); [I] "Sök nätspel" (the public lobby list) is the port's addition. */
 const NET_ITEMS = ['Starta nätspel', 'Anslut', 'Sök nätspel'];
+/**
+ * [I] The unofficial rule sets the host cycles through in the waiting room (not in the original):
+ * punching, cart theft, or both.
+ */
+const RULE_SETS: Array<[string, NetRules]> = [
+  ['Originalregler', { punch: false, grabCarts: false }],
+  ['Slag', { punch: true, grabCarts: false }],
+  ['Vagnstöld', { punch: false, grabCarts: true }],
+  ['Slag och stöld', { punch: true, grabCarts: true }],
+];
+const ruleSet = (r: NetRules): number => RULE_SETS.findIndex(([, s]) => s.punch === r.punch && s.grabCarts === r.grabCarts);
+/** Character card (256 x 256 texels): the text panel inside the frame, and a margin column / row free of text. */
+const CARD_INNER = [14, 16, 242, 240];
+const CARD_MARGIN = [24, 26];
 /** Rows shown on the lobby list page. */
 const LIST_ROWS = 7;
 /** Network games are Varujakten, Matkrig or Vagnrace (range 2..4 on the host page 0x420820). */
@@ -181,7 +202,8 @@ export class Menu {
   }
 
   netLobby(state: LobbyState): void {
-    if (this.page !== 'netWait') this.waitSel = 0;
+    // The host starts on Starta, below the rules row.
+    if (this.page !== 'netWait') this.waitSel = 1;
     this.lobby = state;
     this.netBusy = false;
     this.netMessage = '';
@@ -295,7 +317,7 @@ export class Menu {
     }
     if (this.page === 'character') {
       this.signs = 0;
-      this.preview.show(this.character, !characterUnlocked(this.character, this.progress.toplevel));
+      this.preview.show(this.character, !this.unlocked(this.character));
       this.preview.step(dt);
     }
   }
@@ -383,20 +405,21 @@ export class Menu {
   /** Character page (0x41efa0). */
   private drawCharacter(hud: Hud2D): void {
     const i = this.character;
-    const unlocked = characterUnlocked(i, this.progress.toplevel);
-    const name = CHARACTER_NAMES[i];
+    const unlocked = this.unlocked(i);
+    const name = characterName(i);
     const half = Math.trunc(this.width(name) / 2);
     this.text(hud, 320 - half, 10, name, true);
     const w = Math.trunc(Math.sin(this.wobble) * 5);
     this.sprite(hud, this.a.gfx, 260 - half + w, 5, 303 - half + w, 48, 88, 51, 131, 94);
     this.sprite(hud, this.a.gfx, 336 + half - w, 5, 379 + half - w, 48, 132, 51, 175, 94);
-    this.sprite(hud, unlocked ? this.a.cards[i] : this.a.lockedCard, 10, 60, 265, 315, 0, 0, 255, 255);
+    const custom = customCharacter(i);
+    this.sprite(hud, custom ? this.customCard(custom) : unlocked ? this.a.cards[i] : this.a.lockedCard, 10, 60, 265, 315, 0, 0, 255, 255);
     ['Snabbhet', 'Styrka', 'Smidighet'].forEach((label, k) => {
       const y = 326 + 50 * k;
       this.text(hud, 285, y, label, true);
       this.sprite(hud, this.a.gfx, 10, y, 265, y + 23, 0, 95, 255, 118);
       if (unlocked) {
-        const s = CHARACTER_STATS[i][k] * 46;
+        const s = characterStats(i)[k] * 46;
         this.sprite(hud, this.a.gfx, 22, y + 10, 23 + s, y + 15, 0, 119, 1 + s, 124);
       }
     });
@@ -457,8 +480,8 @@ export class Menu {
         const y = 130 + 70 * r;
         this.sprite(hud, this.a.gfx, 50 + ox, y, 305 + ox, y + 51, 0, 0, 255, 50);
         this.tinyCentered(hud, 178 + ox, y + 18, `${e.name}   ${formatTime(Math.max(0, Math.trunc(e.time)))}`);
-        const fu = (e.face % 4) * 64, fv = Math.trunc(e.face / 4) * 64;
-        this.sprite(hud, this.a.faces, 10 + ox, y, 73 + ox, y + 63, fu, fv, fu + 63, fv + 63);
+        const f = faceSprite(e.face, this.a.faces);
+        this.sprite(hud, f.atlas, 10 + ox, y, 73 + ox, y + 63, f.u, f.v, f.u + 63, f.v + 63);
         const d = Math.max(0, Math.min(2, e.diff));
         this.sprite(hud, this.a.gfx, 280 + ox, y + 20, 306 + ox, y + 46, 101 + 26 * d, 125, 126 + 26 * d, 150);
       }
@@ -530,7 +553,7 @@ export class Menu {
     ['Karaktär', 'Bana', 'Spel', 'Ditt namn', 'Lobby'].forEach((label, i) => this.text(hud, 172, 20 + 80 * i, label, this.hostSel === i));
     this.text(hud, 382, 432, 'Starta', this.hostSel === 5);
     [0, 1, 2, 4].forEach((row) => this.rowArrows(hud, 59 + 80 * row, this.hostSel === row));
-    this.banner(hud, 192, 55, CHARACTER_NAMES[this.character]);
+    this.banner(hud, 192, 55, characterName(this.character));
     this.banner(hud, 192, 135, NET_MALL_NAMES[this.netMall]);
     this.banner(hud, 192, 215, MODE_NAMES[NET_MODES[this.netMode]]);
     this.field(hud, 295, this.netName, this.hostSel === 3);
@@ -576,7 +599,7 @@ export class Menu {
     ['Karaktär', 'Ditt namn', 'Lobbykod'].forEach((label, i) => this.text(hud, 172, 20 + 95 * i, label, this.joinSel === i));
     this.text(hud, 382, 335, 'Starta', this.joinSel === 3);
     this.rowArrows(hud, 59, this.joinSel === 0);
-    this.banner(hud, 192, 55, CHARACTER_NAMES[this.character]);
+    this.banner(hud, 192, 55, characterName(this.character));
     this.field(hud, 150, this.netName, this.joinSel === 1);
     this.field(hud, 245, this.netCode, this.joinSel === 2);
     this.netBanner(hud, 400);
@@ -596,8 +619,9 @@ export class Menu {
       const x = 320 * c, y = 80 * r;
       this.sprite(hud, this.a.gfx, x + 45, y + 15, x + 300, y + 66, 0, 0, 255, 50);
       this.tinyCentered(hud, x + 173, y + 33, p.name);
-      const fu = (p.character % 4) * 64, fv = Math.trunc(p.character / 4) * 64;
-      this.sprite(hud, this.a.faces, x, y + 10, x + 63, y + 73, fu, fv, fu + 63, fv + 63);
+      // Custom characters show where installed here, else their base character.
+      const f = faceSprite(customById(p.custom?.id)?.index ?? p.character, this.a.faces);
+      this.sprite(hud, f.atlas, x, y + 10, x + 63, y + 73, f.u, f.v, f.u + 63, f.v + 63);
     });
     const hosting = lobby.host === lobby.you;
     // [I] Hidden when the eighth player's banner takes its place.
@@ -605,12 +629,14 @@ export class Menu {
       this.sprite(hud, this.a.gfx, 365, 255, 620, 306, 0, 0, 255, 50);
       this.tinyCentered(hud, 493, 273, hosting ? 'Väntar på andra spelare...' : 'Väntar på startsignal...');
     }
-    // [I] The code the others type on the join page.
+    // [I] The code the others type on the join page, and the rules (the host picks them here).
     const code = `Kod ${lobby.code}`;
-    this.text(hud, 550 - this.width(code), 339, code, false);
-    const items = hosting ? ['Starta', 'Avbryt'] : ['Avbryt'];
+    this.text(hud, 550 - this.width(code), 312, code, false);
+    const rules = RULE_SETS[Math.max(0, ruleSet(lobby.rules))][0];
+    const items = hosting ? [rules, 'Starta', 'Avbryt'] : ['Avbryt'];
+    if (!hosting) this.text(hud, 550 - this.width(rules), 352, rules, false);
     const sel = Math.min(this.waitSel, items.length - 1);
-    items.forEach((s, i) => this.text(hud, 550 - this.width(s), 430 - 50 * (items.length - 1 - i), s, i === sel));
+    items.forEach((s, i) => this.text(hud, 550 - this.width(s), 432 - 40 * (items.length - 1 - i), s, i === sel));
     this.text(hud, 20, 370, MODE_NAMES[lobby.mode as GameMode] ?? '', false);
     this.sprite(hud, this.a.levels, 20, 410, 275, 461, 0, 51 * lobby.mall, 255, 51 * (lobby.mall + 1));
   }
@@ -650,12 +676,13 @@ export class Menu {
       case 'character':
         if (k === 'left' || k === 'right') {
           play(SND.value);
-          this.character = (this.character + (k === 'left' ? 9 : 1)) % 10;
+          const n = characterTotal();
+          this.character = (this.character + (k === 'left' ? n - 1 : 1)) % n;
         } else if (k === 'up' || k === 'down') play(SND.move);
         else if (k === 'enter') {
           play(SND.select);
           // 0x41ef40: a locked character only gets the error sound.
-          if (!characterUnlocked(this.character, this.progress.toplevel)) return play(SND.error);
+          if (!this.unlocked(this.character)) return play(SND.error);
           this.mall = Math.min(this.mall, MALL_COUNT - 1);
           this.page = 'mall';
         } else if (k === 'esc') {
@@ -718,7 +745,7 @@ export class Menu {
           this.netMessage = '';
           this.netBusy = false;
           // Both pages offer the unlocked characters only, the host page the open malls.
-          this.character = Math.min(this.character, this.progress.toplevel + 4, 9);
+          if (!this.unlocked(this.character)) this.character = 0;
           this.netMall = Math.min(this.netMall, this.progress.toplevel, MALL_COUNT - 1);
           this.page = (['netHost', 'netJoin', 'netList'] as Page[])[this.netSel];
           if (this.page === 'netList') {
@@ -732,13 +759,16 @@ export class Menu {
         }
         return;
       case 'netHost': {
-        const ranges = [Math.min(this.progress.toplevel + 4, 9), Math.min(this.progress.toplevel, MALL_COUNT - 1), NET_MODES.length - 1];
+        const ranges = [0, Math.min(this.progress.toplevel, MALL_COUNT - 1), NET_MODES.length - 1];
         if (k === 'up' || k === 'down') {
           play(SND.move);
           this.hostSel = (this.hostSel + (k === 'up' ? 5 : 1)) % 6;
         } else if ((k === 'left' || k === 'right') && this.hostSel === 4) {
           play(SND.value);
           this.netPublic = !this.netPublic;
+        } else if ((k === 'left' || k === 'right') && this.hostSel === 0) {
+          if (!this.stepCharacter(k === 'right' ? 1 : -1)) return;
+          play(SND.value);
         } else if ((k === 'left' || k === 'right') && this.hostSel < 3) {
           const values = [this.character, this.netMall, this.netMode];
           const v = values[this.hostSel] + (k === 'right' ? 1 : -1);
@@ -780,10 +810,8 @@ export class Menu {
           play(SND.move);
           this.joinSel = (this.joinSel + (k === 'up' ? 3 : 1)) % 4;
         } else if ((k === 'left' || k === 'right') && this.joinSel === 0) {
-          const v = this.character + (k === 'right' ? 1 : -1);
-          if (v < 0 || v > Math.min(this.progress.toplevel + 4, 9)) return;
+          if (!this.stepCharacter(k === 'right' ? 1 : -1)) return;
           play(SND.value);
-          this.character = v;
         } else if (k === 'enter' && this.joinSel === 3 && !this.netBusy) {
           if (this.netCode.length !== CODE_LENGTH) return play(SND.error);
           play(SND.select);
@@ -798,12 +826,17 @@ export class Menu {
         return;
       case 'netWait': {
         const hosting = !!this.lobby && this.lobby.host === this.lobby.you;
-        const count = hosting ? 2 : 1;
+        const count = hosting ? 3 : 1;
         if (k === 'up' || k === 'down') {
           play(SND.move);
-          this.waitSel = (Math.min(this.waitSel, count - 1) + 1) % count;
+          this.waitSel = (Math.min(this.waitSel, count - 1) + (k === 'up' ? count - 1 : 1)) % count;
+        } else if (hosting && this.waitSel === 0 && (k === 'left' || k === 'right' || k === 'enter') && this.lobby) {
+          play(SND.value);
+          const n = RULE_SETS.length;
+          const i = (Math.max(0, ruleSet(this.lobby.rules)) + (k === 'left' ? n - 1 : 1)) % n;
+          this.host.netRules({ ...RULE_SETS[i][1] });
         } else if (k === 'enter') {
-          if (hosting && this.waitSel === 0) {
+          if (hosting && this.waitSel === 1) {
             play(SND.select);
             this.host.netStart();
           } else {
@@ -820,6 +853,70 @@ export class Menu {
       case 'quit':
         return;
     }
+  }
+
+  private readonly customCards = new Map<CustomCharacter, Atlas>();
+
+  /**
+   * [I] A custom character's card: the base character's card with its text painted over by its
+   * background (sampled from the margins left of and above the text) and the JSON description
+   * written in its place.
+   */
+  private customCard(c: CustomCharacter): Atlas {
+    let card = this.customCards.get(c);
+    if (card) return card;
+    const src = this.a.cards[c.base].canvas;
+    const canvas = document.createElement('canvas');
+    canvas.width = src.width;
+    canvas.height = src.height;
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(src, 0, 0);
+    const s = canvas.width / 256;
+    const [x0, y0, x1, y1] = [CARD_INNER[0] * s, CARD_INNER[1] * s, CARD_INNER[2] * s, CARD_INNER[3] * s].map(Math.round);
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = img.data;
+    const at = (x: number, y: number) => (y * canvas.width + x) * 4;
+    const lx = Math.round(CARD_MARGIN[0] * s), ty = Math.round(CARD_MARGIN[1] * s);
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        // Separable background: the margin column's colour for this row plus the margin row's
+        // change along x.
+        const mx = x < canvas.width / 2 ? x : canvas.width - 1 - x;
+        const row = at(lx, y), colTop = at(mx, ty), corner = at(lx, ty), o = at(x, y);
+        for (let k = 0; k < 3; k++) d[o + k] = d[row + k] + d[colTop + k] - d[corner + k];
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    ctx.fillStyle = 'rgb(220, 220, 220)';
+    ctx.font = `${13 * s}px "Comic Sans MS", "Comic Neue", cursive`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const words = c.description.split(/\s+/).filter(Boolean);
+    const lines: string[] = [];
+    for (const w of words) {
+      const last = lines[lines.length - 1];
+      if (last !== undefined && ctx.measureText(`${last} ${w}`).width <= (x1 - x0) - 40 * s) lines[lines.length - 1] = `${last} ${w}`;
+      else lines.push(w);
+    }
+    lines.forEach((l, n) => ctx.fillText(l, canvas.width / 2, (CARD_MARGIN[1] + 12 + 14 * n) * s));
+    card = { canvas };
+    this.customCards.set(c, card);
+    return card;
+  }
+
+  /** Originals as the toplevel allows; custom characters are always open. */
+  private unlocked(index: number): boolean {
+    return index >= CHARACTER_NAMES.length || characterUnlocked(index, this.progress.toplevel);
+  }
+
+  /** Network pages: the previous / next open character (no wrap); false at the ends. */
+  private stepCharacter(d: number): boolean {
+    for (let v = this.character + d; v >= 0 && v < characterTotal(); v += d) {
+      if (!this.unlocked(v)) continue;
+      this.character = v;
+      return true;
+    }
+    return false;
   }
 
   private leaveLobby(): void {
@@ -841,6 +938,11 @@ export class Menu {
     else return false;
     e.preventDefault();
     return true;
+  }
+
+  /** [I] The page wants typed text (touch controls show a keyboard button). */
+  wantsText(): boolean {
+    return this.page === 'name' || (this.page === 'netHost' && this.hostSel === 3) || (this.page === 'netJoin' && (this.joinSel === 1 || this.joinSel === 2));
   }
 
   /** Quit page (0x4200b0): J/Y quits, any other key goes back to the main page. */

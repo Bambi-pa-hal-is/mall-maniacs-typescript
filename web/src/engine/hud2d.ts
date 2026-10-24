@@ -87,6 +87,19 @@ export class Hud2D {
     this.ctx.imageSmoothingEnabled = !pixelated;
   }
 
+  /**
+   * [I] Draw what follows smaller, towards the top-left corner (the shopping list on phones);
+   * undo with popScale.
+   */
+  pushScale(k: number): void {
+    this.ctx.save();
+    this.ctx.scale(k, k);
+  }
+
+  popScale(): void {
+    this.ctx.restore();
+  }
+
   clear(): void {
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);

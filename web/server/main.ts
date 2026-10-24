@@ -13,9 +13,14 @@ const TYPES: Record<string, string> = {
   '.js': 'text/javascript',
   '.css': 'text/css',
   '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.mp3': 'audio/mpeg',
+  '.glb': 'model/gltf-binary',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
 };
 
 const server = http.createServer((req, res) => {

@@ -18,3 +18,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.log
+
+# Optional custom characters (see README.md)
+/web/customcharachters/

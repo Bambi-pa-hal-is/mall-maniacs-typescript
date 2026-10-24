@@ -142,6 +142,22 @@ Read this first in a new session, then `re/ANALYSIS.md` (findings and function m
   - The new "Sök nätspel" page lists joinable public lobbies (server `list` → `lobbies`), refreshed every 2 s; ENTER joins.
   - Tested: unit test, plus a public lobby in one tab joined from the list in another.
 
+- **Loading:** every game file is fetched when the page loads (`preloadGameFiles`, 8 at a time), behind a spinner with a file counter and progress bar (`#loader` in index.html). A level then builds in about 75 ms, with no loading text. The CD music still streams.
+
+### Phones ([I])
+- `src/touch.ts`: touch controls dispatch the same KeyboardEvents as the keyboard (floating joystick → arrows; in a race it steers by direction: any push walks forward (backward past 135°) and a side push beyond 20° also turns (user found left-then-up awkward); one direction + 220 ms repeat in the menu; buttons Space/E/J/N/Enter/Escape; ⌨ focuses a hidden input via `Menu.wantsText()`). Fullscreen + `screen.orientation.lock('landscape')` on the first touch; a portrait notice; `public/manifest.webmanifest` (fullscreen, landscape). `?touch` forces it on desktop. The shopping list is drawn at 0.7 when `compactHud()` (short or small touch screen) via `Hud2D.pushScale`. Not yet tried on a real phone.
+
+### Punch v2 and slide safety net ([I])
+- Punch: range 1400, hits anyone in front: knockback (separate `knockback` push, decays 0.86/tick) + stun `10 + 10 * strength` ticks of the puncher (controls ignored, s_oops) + cart release; sound 22 Throw-Hit.
+- Aqua slide: a sliding walker that moves < 300 in 25 ticks is let go by the currents for 75 ticks (`Player.slideStuck`), after the user got stuck at the bottom in a network race. The anchors lie on/past the far edge of each mvnc area (dumped from aqua.eo), so the stuck case is a wall/ledge stopping the walker inside an area.
+
+### House rules (network, [I])
+- Host picks Originalregler / Slag / Vagnstöld / Slag och stöld in the waiting room (menu `RULE_SETS`, protocol `NetRules`, server `rules` msg + test). Player: `punch()`, `grabTarget()` (nearest free cart when theft is on), `dragCart()`, `stopDragging()`; punch on E/Ctrl and as Space's fallback (user asked for both); flag bit 8. Hit = cart bump sound, swing silent (user: throw sound was wrong). Verified in browser: punch drops the cart, theft drags and releases. Not pushed yet.
+
+### Custom characters ([I])
+- `web/customcharachters/characters.json` (gitignored, optional) → Vite manifest `custom` (reloads on edit), files served at `/custom/<folder>/` and copied by the build. `src/game/customCharacters.ts`: load glb, portrait rendered from the head, `rigCustomCharacter()` = stretch base character's rest mesh/joints onto the model's box, nearest-vertex weights for the body (no arm bones, no node 9), arms fitted (hand = lowest outermost part above the lowest quarter, wrist 0.1 h above the tip, shoulder one arm radius inside the outline) and found by a surface flood fill from the hand (near the arm line, no more than 0.6 arm radii inward, so the jacket stays on the body); the armpit (inner side of the upper arm) is mostly chest so it does not wing out; the shoulder end of the upper arm fades into the chest. Character page card = base card with the text painted out + JSON description. Network: `custom {id, stats}` on create/join, server cleans it; stats used by everyone.
+- Patrik (base 0) is in; user feedback drove the arm fixes (hips/feet on hand bones, shoulders when pushing).
+
 ## Continue with (in this order)
 1. **Done:** Aqua's slide, the `s_oops` pose, SPLASH, floating carts, `c_ac` fixed cameras and the original chase camera (ANALYSIS §4.11). Ask the user to compare with the original.
    - Orient/Future `mvnc` launch pads, `hurl` and `tele` are done too (ANALYSIS §4.11). Fall gravity is now the decoded 18 per tick.

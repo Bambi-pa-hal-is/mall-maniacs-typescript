@@ -145,3 +145,33 @@ test('public lobbies are listed until they fill up or start racing; private ones
   server.message(late, { t: 'list' });
   assert.deepEqual(late.last('lobbies')!.lobbies, []);
 });
+
+test('house rules are host-only, shared in the lobby and sent with the start', () => {
+  const { server } = setup();
+  const host = new Fake();
+  const guest = new Fake();
+  server.message(host, { t: 'create', name: 'h', character: 0, mall: 0, mode: 2 });
+  const code = host.lobby().code;
+  server.message(guest, { t: 'join', code, name: 'g', character: 1 });
+  assert.deepEqual(guest.lobby().rules, { punch: false, grabCarts: false });
+  server.message(guest, { t: 'rules', rules: { punch: true, grabCarts: true } });
+  assert.deepEqual(host.lobby().rules, { punch: false, grabCarts: false });
+  server.message(host, { t: 'rules', rules: { punch: true, grabCarts: false } });
+  assert.deepEqual(guest.lobby().rules, { punch: true, grabCarts: false });
+  server.message(host, { t: 'start' });
+  assert.deepEqual(guest.last('start')?.rules, { punch: true, grabCarts: false });
+});
+
+test('custom character picks are cleaned and sent with the lobby and the start', () => {
+  const { server } = setup();
+  const host = new Fake();
+  const guest = new Fake();
+  server.message(host, { t: 'create', name: 'h', character: 0, custom: { id: 'patrik', stats: [9, 0, 3] }, mall: 0, mode: 2, public: false });
+  const code = host.lobby().code;
+  server.message(guest, { t: 'join', code, name: 'g', character: 1, custom: { id: '../evil', stats: [3, 3, 3] } });
+  const [a, b] = guest.lobby().players;
+  assert.deepEqual(a.custom, { id: 'patrik', stats: [5, 1, 3] });
+  assert.equal(b.custom, undefined);
+  server.message(host, { t: 'start' });
+  assert.deepEqual(guest.last('start')?.players[0].custom, { id: 'patrik', stats: [5, 1, 3] });
+});

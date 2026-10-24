@@ -1,4 +1,5 @@
 import { loadGameFile } from '../engine/assets';
+import { faceSprite } from './customCharacters';
 import { atlasFromTpg, type Atlas, type Hud2D, type HudFont } from '../engine/hud2d';
 import { parseFont } from '../formats/font';
 import type { Level } from './level';
@@ -12,6 +13,14 @@ import type { Player } from './player';
  * font (font.txt + font00), hud digits (hudfont.txt + hfont00) and the tiny font
  * (menu/tinyfont.txt + tfont00).
  */
+/** [I] The shopping list's size on small screens (phones). */
+const LIST_SCALE_COMPACT = 0.7;
+
+/** A phone-sized window: short (landscape phone) or narrow and touch-driven. */
+export function compactHud(): boolean {
+  return window.innerHeight < 520 || (matchMedia('(pointer: coarse)').matches && Math.min(window.innerWidth, window.innerHeight) < 600);
+}
+
 export interface HudAssets {
   list: Atlas;
   chars: Atlas;
@@ -81,9 +90,8 @@ export class GameHud {
   }
 
   private portrait(p: Player, x: number, y: number, anchor: 'left' | 'center' | 'right'): void {
-    const i = this.characterIndex(p);
-    const u = (i % 4) * 64, v = Math.floor(i / 4) * 64;
-    this.hud.sprite(this.a.chars, x, y, x + 64, y + 64, u, v, u + 63, v + 63, anchor);
+    const { atlas, u, v } = faceSprite(this.characterIndex(p), this.a.chars);
+    this.hud.sprite(atlas, x, y, x + 64, y + 64, u, v, u + 63, v + 63, anchor);
   }
 
   /** "n / total" in hud digits, stepping down like the original (y, y+10, y+20). */
@@ -189,6 +197,9 @@ export class GameHud {
       this.paper += (target - this.paper) * (1 - Math.pow(0.5, frameTicks));
       if (Math.abs(target - this.paper) < 0.5) this.paper = target;
       if (this.paper > 0.5) {
+        // [I] Smaller on phones, where the paper would cover much of the view.
+        const compact = compactHud();
+        if (compact) h.pushScale(LIST_SCALE_COMPACT);
         h.sprite(a.list, 0, 0, 200, this.paper + 22, 0, 255 - this.paper, 200, 255, 'left');
         let row = 0;
         me.list.forEach((t, i) => {
@@ -196,6 +207,7 @@ export class GameHud {
           h.text(a.listFont, 5, row - target + 5 + this.paper, level.shop.itemName(t), 'left');
           row += 22;
         });
+        if (compact) h.popScale();
       }
     }
 

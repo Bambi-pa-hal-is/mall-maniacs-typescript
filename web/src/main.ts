@@ -7,7 +7,7 @@ import { separatePlayers } from './game/crowd';
 import { Keyboard, type Controls } from './game/input';
 import { loadLevel, type Level } from './game/level';
 import { GameMode, MODE_NAMES } from './game/modes';
-import { loadGameFile } from './engine/assets';
+import { loadGameFile, preloadGameFiles } from './engine/assets';
 import { parseTga } from './formats/tga';
 import { Hud2D } from './engine/hud2d';
 import { GameHud, loadHudAssets, type RaceResult } from './game/hud';
@@ -20,7 +20,9 @@ import { Menu, type MenuKey } from './menu/menu';
 import { loadMenuAssets } from './menu/menuAssets';
 import { seedRandom } from './game/random';
 import { NetClient, unpackControls, type StartMessage } from './net/client';
-import { SUM_TICKS } from './net/protocol';
+import { installTouchControls, isTouchDevice } from './touch';
+import { characterStats, customById, customCharacter, loadCustomCharacters } from './game/customCharacters';
+import { ORIGINAL_RULES, SUM_TICKS, type CustomPick, type NetRules } from './net/protocol';
 
 const app = document.getElementById('app')!;
 const hud = document.getElementById('hud')!;
@@ -97,6 +99,8 @@ let level: Level | null = null;
 let loop: FixedLoop | null = null;
 /** ENTER after the race: play again with the same settings. */
 let restartRace: (() => void) | null = null;
+/** The race has ended and waits for Enter (the touch controls show OK). */
+let raceOver = false;
 let records: Records | null = null;
 let progress: Progress;
 let menu: Menu | null = null;
@@ -126,17 +130,37 @@ const net = new NetClient({
     if (netRace) netRace.desync = true;
   },
 });
-let netRace: { local: number; humans: number; names: string[]; desync: boolean } | null = null;
+let netRace: {
+  local: number;
+  humans: number;
+  names: string[];
+  desync: boolean;
+  rules: NetRules;
+  stats: Array<readonly [number, number, number]>;
+} | null = null;
+
+/** A menu character for the lobby: an original (0-9), plus the custom pick for custom characters. */
+function lobbyCharacter(index: number): { character: number; custom?: CustomPick } {
+  const c = customCharacter(index);
+  return c ? { character: c.base, custom: { id: c.id, stats: [...c.stats] } } : { character: index };
+}
 
 function startNetRace(msg: StartMessage): void {
   const lobby = net.lobby;
   const local = lobby ? msg.players.findIndex((p) => p.id === lobby.you) : -1;
   if (local < 0) return;
-  netRace = { local, humans: msg.players.length, names: msg.players.map((p) => p.name), desync: false };
-  void start(
-    { mode: msg.mode, mall: msg.mall, character: msg.players[local].character, difficulty: progress.difficulty },
-    { seed: msg.seed, characters: msg.players.map((p) => p.character) },
-  );
+  // Custom characters show where installed (else their base character) but always use the
+  // lobby's stats, so every lockstep client simulates the same.
+  const characters = msg.players.map((p) => customById(p.custom?.id)?.index ?? p.character);
+  netRace = {
+    local,
+    humans: msg.players.length,
+    names: msg.players.map((p) => p.name),
+    desync: false,
+    rules: msg.rules ?? ORIGINAL_RULES,
+    stats: msg.players.map((p) => p.custom?.stats ?? characterStats(p.character)),
+  };
+  void start({ mode: msg.mode, mall: msg.mall, character: characters[local], difficulty: progress.difficulty }, { seed: msg.seed, characters });
 }
 
 const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -211,8 +235,9 @@ async function start(chosen: GameChoice, netStart?: { seed: number; characters: 
     // A network race (0x422840) has the lobby's players only, in its order.
     const count = playerCount(chosen.mode, chosen.mall, chosen.difficulty);
     const characters = netStart ? netStart.characters : pickCharacters(chosen.character, count, progress.toplevel);
-    const seats = online ? { humans: online.humans, local: online.local, names: online.names } : undefined;
-    level = await loadLevel(config, chosen.mall, characters, chosen.difficulty, chosen.mode, setStatus, seats);
+    const seats = online ? { humans: online.humans, local: online.local, names: online.names, rules: online.rules, stats: online.stats } : undefined;
+    // Every file was fetched when the page loaded: building the level takes a moment, no progress text.
+    level = await loadLevel(config, chosen.mall, characters, chosen.difficulty, chosen.mode, () => {}, seats);
     // mm_init (0x40a4d0) starts the mall's CD track (levels[].music: 2-6).
     audio.music(level.config.music);
     scene.add(level.root);
@@ -220,7 +245,7 @@ async function start(chosen: GameChoice, netStart?: { seed: number; characters: 
     level.players.forEach((p) => (p.showSplash = !retro));
     if (import.meta.env.DEV) (window as unknown as { mm: unknown }).mm = { level, config, camera };
     levelSound = new LevelSound(audio, level.root, level.player, level.players, level.config.index, level.events);
-    const charIndex = (p: { name: string }) => Math.max(0, config.characters.findIndex((c) => c.objectName === p.name));
+    const charIndex = (p: { character: number }) => p.character;
     const gameHud = new GameHud(hud2d, await loadHudAssets(level.config.scenePath), level, charIndex);
     if (import.meta.env.DEV) Object.assign((window as unknown as { mm: object }).mm, { hud: gameHud });
     const sound = levelSound;
@@ -239,6 +264,7 @@ async function start(chosen: GameChoice, netStart?: { seed: number; characters: 
     let elapsedMs = 0;
     /** The race ends when the first player checks out (DAT_00458130 / DAT_00458134). */
     let result: RaceResult | null = null;
+    raceOver = false;
     loop = new FixedLoop(
       tickMs,
       () => {
@@ -286,6 +312,7 @@ async function start(chosen: GameChoice, netStart?: { seed: number; characters: 
             });
           }
           result = { winner, timeMs: elapsedMs, record };
+          raceOver = true;
           for (const p of current.players) p.raceEnd = p === winner ? 'winner' : 'other';
           // Hud_Draw: a win in Varujakten/Matkrig in the highest open mall opens the next one.
           if (winner === current.player) progress.won(mode, current.config.index);
@@ -501,11 +528,30 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyF' && !e.repeat) cycleFpsCap();
 });
 
+/** The page-load spinner (index.html #loader). */
+const loaderEl = document.getElementById('loader')!;
+const loaderText = loaderEl.querySelector('.text')!;
+const loaderBar = loaderEl.querySelector<HTMLElement>('.bar div')!;
+
 async function init(): Promise<void> {
+  if (isTouchDevice()) {
+    installTouchControls(() => ({
+      menu: !level,
+      text: !level && !!menu?.wantsText(),
+      quiz: !!level?.player.quiz,
+      punch: !!level?.player.rules.punch,
+      result: !!level && raceOver,
+    }));
+  }
   try {
-    setStatus('Laddar…');
+    // Every game file is fetched while the page loads, so levels start without waiting on the network.
+    await preloadGameFiles((done, total) => {
+      loaderText.textContent = `Laddar spelet… ${done} / ${total}`;
+      loaderBar.style.width = `${total ? (100 * done) / total : 100}%`;
+    });
+    loaderText.textContent = 'Startar…';
     config = await loadGameConfig();
-    [records, progress] = await Promise.all([Records.load(), Progress.load()]);
+    [records, progress] = await Promise.all([Records.load(), Progress.load(), loadCustomCharacters()]);
     const [assets, preview] = await Promise.all([loadMenuAssets(), CharacterPreview.load(), audio.loadBank('sound/menu')]);
     menu = new Menu(assets, new MenuFlag(assets.fling), preview, progress, records, {
       play: (id) => audio.play(id),
@@ -513,17 +559,19 @@ async function init(): Promise<void> {
       retro: () => retro,
       setRetro,
       quit: () => menu?.restartIntro(),
-      netCreate: (name, character, mall, mode, isPublic) => net.send({ t: 'create', name, character, mall, mode, public: isPublic }),
+      netCreate: (name, character, mall, mode, isPublic) => net.send({ t: 'create', name, ...lobbyCharacter(character), mall, mode, public: isPublic }),
       netList: () => net.send({ t: 'list' }),
-      netJoin: (code, name, character) => net.send({ t: 'join', code, name, character }),
+      netJoin: (code, name, character) => net.send({ t: 'join', code, name, ...lobbyCharacter(character) }),
       netStart: () => net.send({ t: 'start' }),
+      netRules: (rules) => net.send({ t: 'rules', rules }),
       netLeave: () => net.leave(),
     });
     if (import.meta.env.DEV) (window as unknown as { mmMenu: unknown }).mmMenu = { menu, preview, net, audio };
-    setStatus(null);
+    loaderEl.classList.add('hidden');
     startMenu();
   } catch (err) {
     console.error(err);
+    loaderEl.classList.add('hidden');
     setStatus(`Fel: ${(err as Error).message}`);
   }
 }

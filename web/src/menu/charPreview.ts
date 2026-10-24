@@ -4,6 +4,7 @@ import { AnimClip, AnimPlayer } from '../engine/animation';
 import { createEngineRoot } from '../engine/coords';
 import { TextureBank } from '../engine/materials';
 import { buildMesh } from '../engine/meshFactory';
+import { baseCharacter, customCharacter, rigCustomCharacter } from '../game/customCharacters';
 import { parseAnm, type Anm } from '../formats/anm';
 import { detailLevel, parseSen, type SenScene } from '../formats/sen';
 
@@ -69,9 +70,11 @@ export class CharacterPreview {
     if (this.previous) this.root.remove(this.previous);
     this.previous = this.current?.object ?? null;
     this.current = null;
-    const meshIndex = this.mesh(locked ? 'QUESTION' : CHARACTER_MODELS[index]);
+    const meshIndex = this.mesh(locked ? 'QUESTION' : CHARACTER_MODELS[baseCharacter(index)]);
     if (meshIndex === null) return;
-    const built = buildMesh(this.sen, meshIndex, this.bank);
+    let built = buildMesh(this.sen, meshIndex, this.bank);
+    const custom = locked ? null : customCharacter(index);
+    if (custom) built = rigCustomCharacter(custom, built);
     const holder = new THREE.Group();
     holder.rotation.order = 'YXZ';
     holder.add(built.object);

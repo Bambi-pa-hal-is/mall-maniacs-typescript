@@ -24,11 +24,11 @@ export interface NetEvents {
 export const JITTER_FRAMES = 2;
 
 export function packControls(c: Controls): NetInput {
-  return [c.turn, c.throttle, (c.action ? 1 : 0) | (c.answer !== undefined ? 2 : 0) | (c.answer ? 4 : 0)];
+  return [c.turn, c.throttle, (c.action ? 1 : 0) | (c.answer !== undefined ? 2 : 0) | (c.answer ? 4 : 0) | (c.punch ? 8 : 0)];
 }
 
 export function unpackControls([turn, throttle, flags]: NetInput): Controls {
-  return { turn, throttle, action: (flags & 1) !== 0, answer: flags & 2 ? (flags & 4) !== 0 : undefined };
+  return { turn, throttle, action: (flags & 1) !== 0, answer: flags & 2 ? (flags & 4) !== 0 : undefined, punch: (flags & 8) !== 0 };
 }
 
 /** One WebSocket to the lobby server (same host as the page). */

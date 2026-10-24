@@ -20,7 +20,18 @@ export const NAME_LENGTH = 19;
 export interface LobbyPlayer {
   id: number;
   name: string;
+  /** An original character (0-9); the stand-in when `custom` is not installed on a client. */
   character: number;
+  custom?: CustomPick;
+}
+
+/**
+ * [I] A custom character (web/customcharachters): its id, shown by clients that have it, and its
+ * stats, used by every client so the lockstep simulations agree.
+ */
+export interface CustomPick {
+  id: string;
+  stats: [number, number, number];
 }
 
 export interface LobbyState {
@@ -35,7 +46,18 @@ export interface LobbyState {
   racing: boolean;
   /** Listed for everyone ("Sök nätspel"), or joinable by code only. */
   public: boolean;
+  rules: NetRules;
 }
+
+/** Unofficial rules the host can switch on (not in the original game). */
+export interface NetRules {
+  /** E / Ctrl (or Space with nothing else to do) punches; a hit player lets go of their cart. */
+  punch: boolean;
+  /** Any free cart can be grabbed and dragged away to hide it. */
+  grabCarts: boolean;
+}
+
+export const ORIGINAL_RULES: NetRules = { punch: false, grabCarts: false };
 
 /** A public lobby as the lobby list shows it. */
 export interface PublicLobby {
@@ -48,18 +70,20 @@ export interface PublicLobby {
 
 /**
  * One player's controls in a frame: [turn, throttle, flags]. flags bit 0 = action (Space),
- * bit 1 = answer given, bit 2 = the answer (J/Y). Turn and throttle are -1, 0 or 1.
+ * bit 1 = answer given, bit 2 = the answer (J/Y), bit 3 = punch (E / Ctrl). Turn and throttle are -1, 0 or 1.
  */
 export type NetInput = [number, number, number];
 
 export type ClientMessage =
-  | { t: 'create'; name: string; character: number; mall: number; mode: number; public: boolean }
+  | { t: 'create'; name: string; character: number; custom?: CustomPick; mall: number; mode: number; public: boolean }
   /** The joinable public lobbies (not racing, not full). */
   | { t: 'list' }
-  | { t: 'join'; code: string; name: string; character: number }
+  | { t: 'join'; code: string; name: string; character: number; custom?: CustomPick }
   | { t: 'leave' }
   /** Host only: load the race. */
   | { t: 'start' }
+  /** Host only: the unofficial rules for the next race. */
+  | { t: 'rules'; rules: NetRules }
   /** The level is loaded; the frame clock starts when every racer is ready. */
   | { t: 'ready' }
   | { t: 'input'; i: NetInput }
@@ -75,7 +99,7 @@ export type ServerMessage =
   | { t: 'lobbies'; lobbies: PublicLobby[] }
   | { t: 'error'; reason: ErrorReason }
   /** Load this race; slots follow `players`. */
-  | { t: 'start'; seed: number; mall: number; mode: number; players: LobbyPlayer[] }
+  | { t: 'start'; seed: number; mall: number; mode: number; players: LobbyPlayer[]; rules: NetRules }
   /** Frame n: one input per slot (a player who left stands still). */
   | { t: 'frame'; n: number; i: NetInput[] }
   /** The race was ended by the host; the lobby message follows. */

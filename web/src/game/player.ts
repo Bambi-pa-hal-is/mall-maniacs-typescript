@@ -49,6 +49,14 @@ export function movementParams(master: MasterConfig, speedStat = 5, agilityStat 
  *   pushing (+0x2a4): the character plus the cart parts 750 ahead (corner radius 5), the cart
  *     parts weighing Styrka*25 + 75; active instead of the other two while the cart is held.
  */
+/** [I] Unofficial rules a network host can switch on (not in the original game). */
+export interface HouseRules {
+  /** E / Ctrl (or Space with nothing else to do) punches; a hit player lets go of their cart. */
+  punch: boolean;
+  /** Any free cart can be grabbed and dragged away (to hide it). */
+  grabCarts: boolean;
+}
+
 export interface PhysPart {
   z: number;
   x: number;
@@ -97,6 +105,19 @@ const WHEEL_DROP = 300;
 /** A wheel hitting the floor faster than gravity bounces back at this factor (0x44b700). */
 const WHEEL_BOUNCE = -0.75;
 const WALKER_RADIUS = 230;
+/** [I] Unofficial punch rule: reach, half-angle in front, ticks between punches. */
+const PUNCH_RANGE = 1400;
+const PUNCH_ARC = 0.8;
+const PUNCH_COOLDOWN = 20;
+/**
+ * Knockback of a punch: a push of its own (units per tick), kept apart from the velocity, which the
+ * body physics clamps to the walking speed, and fading by KNOCKBACK_DECAY per tick (about 800 in all).
+ */
+const PUNCH_KNOCKBACK = 110;
+const KNOCKBACK_DECAY = 0.86;
+/** Stun after a punch: base + per point of the puncher's Styrka, in ticks (25 per second). */
+const STUN_BASE = 10;
+const STUN_PER_STRENGTH = 10;
 /** Turn lean scale (float 0x44b4a8). */
 const LEAN = 5600;
 const _euler = new THREE.Euler();
@@ -128,6 +149,10 @@ const GRAVITY = 18;
  */
 const SLIDE_SPEED = 300;
 const SLIDE_SPIN = 0.23;
+/** [I] Slide safety net (see Player.slideStuck). */
+const SLIDE_STUCK_TICKS = 25;
+const SLIDE_STUCK_DISTANCE = 300;
+const SLIDE_OFF_TICKS = 75;
 const CART_SLIDE_SPEED = 350;
 const CART_SLIDE_SPIN = 0.2;
 const SPLASH_SPIN = 0x1a0a * ((Math.PI * 2) / 65536);
@@ -201,6 +226,8 @@ export type PlayerEvent =
   | 'quiz-start'
   | 'quiz-right'
   | 'quiz-wrong'
+  | 'punch'
+  | 'punched'
   | 'item-thrown'
   | 'burger'
   | 'splash'
@@ -246,8 +273,27 @@ export class Player {
   /** A let-go cart's own motion (it only moves when pushed by a current or a collision). */
   private readonly cartVel = new THREE.Vector2();
   private cartAngVel = 0;
-  /** Walking to the cart's handle (action state 3). */
+  /** Walking to the cart's handle (action state 3): whose cart (own, or another's with cart theft). */
   private grabbing = false;
+  private grabTargetPlayer: Player | null = null;
+  /**
+   * Unofficial network rules ([I], not in the original): punching knocks the cart out of others'
+   * hands; cart theft lets a player drag another player's free cart away to hide it.
+   */
+  rules: HouseRules = { punch: false, grabCarts: false };
+  /** Everyone in the race (set by the level), for punches and cart theft. */
+  others: Player[] = [];
+  /** The other player's cart this player is dragging, and who is dragging this player's cart. */
+  dragging: Player | null = null;
+  draggedBy: Player | null = null;
+  private punchCooldown = 0;
+  /** [I] Ticks left stunned by a punch: no control, the oops animation plays. */
+  stunTicks = 0;
+  /** [I] Slide safety net: where the slide progress was last checked, ticks since, ticks the currents let go. */
+  private readonly slideCheck = new THREE.Vector2();
+  private slideCheckTicks = 0;
+  private slideOff = 0;
+  private readonly knockback = new THREE.Vector2();
   /** Set when the race is over: the winner celebrates, the others stand (0x40c800). */
   raceEnd: 'winner' | 'other' | null = null;
   private cartFall = 0;
@@ -274,6 +320,8 @@ export class Player {
   found: boolean[] = [];
   /** Name shown on the HUD (the lobby name in a network race, else the character object). */
   displayName = '';
+  /** Menu character index (custom characters after the originals); picks the HUD portrait. */
+  character = 0;
   /** Item type carried in the hands, 0 = none (player struct +0x17c). */
   inHand = 0;
   /** Finishing position (1 = winner) once checked out at the goal. */
@@ -429,14 +477,119 @@ export class Player {
   // ---- actions (the original issues these as "action ..." console commands) ----
 
   canGrabCart(): boolean {
-    return !!this.cart && !this.holdingCart && this.inHand === 0 && this.cartDistance() <= GRAB_CART_RANGE;
+    return this.cartGrabbableBy(this);
+  }
+
+  /** Whether `by` may take this player's cart now (own cart, or another's with cart theft). */
+  private cartGrabbableBy(by: Player): boolean {
+    if (!this.cart || this.holdingCart || this.draggedBy) return false;
+    if (by.holdingCart || by.dragging || by.inHand !== 0) return false;
+    if (by !== this && !by.rules.grabCarts) return false;
+    return Math.hypot(this.cartPos.x - by.pos.x, this.cartPos.z - by.pos.z) <= GRAB_CART_RANGE;
+  }
+
+  /** The cart "action grab cart" goes for: the own one, or with cart theft the nearest free one. */
+  private grabTarget(): Player | null {
+    if (!this.rules.grabCarts) return this.cartGrabbableBy(this) ? this : null;
+    let best: Player | null = null;
+    let bestD = Infinity;
+    for (const o of this.others.includes(this) ? this.others : [this, ...this.others]) {
+      if (!o.cartGrabbableBy(this)) continue;
+      const d = Math.hypot(o.cartPos.x - this.pos.x, o.cartPos.z - this.pos.z);
+      if (d < bestD) {
+        bestD = d;
+        best = o;
+      }
+    }
+    return best;
   }
 
   /** "action grab cart" (state 3 of 0x40b510): start walking to the cart's handle. */
   grabCart(): boolean {
-    if (!this.canGrabCart() || !this.cart) return false;
+    const target = this.grabTarget();
+    if (!target) return false;
     this.grabbing = true;
+    this.grabTargetPlayer = target;
     return true;
+  }
+
+  /** Let go of a dragged (stolen) cart; it stays where it is. */
+  stopDragging(): void {
+    const t = this.dragging;
+    if (!t) return;
+    this.dragging = null;
+    t.draggedBy = null;
+    t.cartFall = 1;
+  }
+
+  /**
+   * [I] Punch (unofficial rule): E / Ctrl, or Space when there is no cart to grab and no item to take
+   * or throw. The throw animation plays; anyone
+   * within PUNCH_RANGE in front (within PUNCH_ARC of the heading) is knocked back and stunned for
+   * STUN_BASE + STUN_PER_STRENGTH * the puncher's Styrka ticks, and lets go of their cart or of
+   * the cart they are dragging. PUNCH_COOLDOWN ticks between punches.
+   */
+  private punch(): void {
+    if (!this.rules.punch || this.holdingCart || this.punchCooldown > 0) return;
+    this.punchCooldown = PUNCH_COOLDOWN;
+    if (this.clips.throw) {
+      this.anim.play(this.clips.throw, true);
+      this.anim.rate = 1;
+      this.actionTicks = this.clips.throw.frames.length;
+    }
+    this.events.push('punch');
+    for (const o of this.others) {
+      if (o === this) continue;
+      const dx = o.pos.x - this.pos.x, dz = o.pos.z - this.pos.z;
+      if (Math.hypot(dx, dz) > PUNCH_RANGE || Math.abs(o.pos.y - this.pos.y) > 500) continue;
+      if (Math.abs(wrapAngle(Math.atan2(dx, dz) - this.heading)) > PUNCH_ARC) continue;
+      if (o.holdingCart) o.releaseCart();
+      o.stopDragging();
+      o.grabbing = false;
+      const d = Math.hypot(dx, dz) || 1;
+      o.knockback.set((dx / d) * PUNCH_KNOCKBACK, (dz / d) * PUNCH_KNOCKBACK);
+      o.stunTicks = Math.max(o.stunTicks, STUN_BASE + STUN_PER_STRENGTH * this.strength);
+      o.events.push('punched');
+    }
+  }
+
+  /**
+   * [I] Not in the original: a current pushes towards its anchor, which normally lies at or past
+   * the far end of its area, so the walker leaves the area. If a wall or ledge stops the walker
+   * inside the area instead, it would slide on the spot for ever with no control. So when a
+   * sliding walker has moved less than SLIDE_STUCK_DISTANCE in SLIDE_STUCK_TICKS, the currents
+   * let go of it for SLIDE_OFF_TICKS and it can walk out.
+   */
+  private slideStuck(): boolean {
+    if (!this.sliding) {
+      this.slideCheck.set(this.pos.x, this.pos.z);
+      this.slideCheckTicks = 0;
+      return false;
+    }
+    if (++this.slideCheckTicks < SLIDE_STUCK_TICKS) return false;
+    const moved = Math.hypot(this.pos.x - this.slideCheck.x, this.pos.z - this.slideCheck.y);
+    this.slideCheck.set(this.pos.x, this.pos.z);
+    this.slideCheckTicks = 0;
+    if (moved >= SLIDE_STUCK_DISTANCE) return false;
+    this.slideOff = SLIDE_OFF_TICKS;
+    return true;
+  }
+
+  /** Keep a dragged cart in front of the character; its walls push the character back too. */
+  private dragCart(world: CollisionWorld): void {
+    const t = this.dragging;
+    if (!t || !t.cart) return;
+    const d = t.cart.config.objectPos[2] ?? 750;
+    t.prevCartPos.copy(t.cartPos);
+    t.prevCartHeading = t.cartHeading;
+    t.cartHeading = this.heading;
+    t.cartPos.set(this.pos.x + Math.sin(this.heading) * d, this.pos.y, this.pos.z + Math.cos(this.heading) * d);
+    t.cartVel.set(0, 0);
+    t.cartAngVel = 0;
+    const x = t.cartPos.x, z = t.cartPos.z;
+    t.sweepWalls(world, true);
+    this.pos.x += t.cartPos.x - x;
+    this.pos.z += t.cartPos.z - z;
   }
 
   /**
@@ -448,20 +601,28 @@ export class Player {
    */
   private grabStep(c: Controls): Controls {
     if (!this.grabbing) return c;
-    if (!this.canGrabCart() || !this.cart) {
+    const t = this.grabTargetPlayer ?? this;
+    if (!t.cartGrabbableBy(this) || !t.cart) {
       this.grabbing = false;
       return c;
     }
-    const a = Math.atan2(this.cartPos.x - this.pos.x, this.cartPos.z - this.pos.z);
+    const a = Math.atan2(t.cartPos.x - this.pos.x, t.cartPos.z - this.pos.z);
     const diff = wrapAngle(a - this.heading);
     if (Math.abs(diff) > GRAB_FACING) return { turn: Math.sign(diff), throttle: 0, action: false };
-    if (this.cartDistance() > GRAB_REACH) return { turn: 0, throttle: 1, action: false };
-    const swing = wrapAngle(a - this.cartHeading);
-    if (Math.abs(swing) > Math.abs(this.cartAngVel)) {
-      this.cartAngVel += Math.sign(swing) * this.params.rotateAcc;
+    if (Math.hypot(t.cartPos.x - this.pos.x, t.cartPos.z - this.pos.z) > GRAB_REACH) return { turn: 0, throttle: 1, action: false };
+    const swing = wrapAngle(a - t.cartHeading);
+    if (Math.abs(swing) > Math.abs(t.cartAngVel)) {
+      t.cartAngVel += Math.sign(swing) * this.params.rotateAcc;
       return { turn: 0, throttle: 0, action: false };
     }
     this.grabbing = false;
+    if (t !== this) {
+      // [I] Cart theft: drag the other player's cart.
+      this.dragging = t;
+      t.draggedBy = this;
+      this.events.push('cart-grabbed');
+      return { turn: 0, throttle: 0, action: false };
+    }
     this.holdingCart = true;
     this.cartVel.set(0, 0);
     this.cartAngVel = 0;
@@ -643,10 +804,12 @@ export class Player {
   /** One-button play ("action smart"): release / drop / pick up / grab, whichever applies. */
   smartAction(): void {
     if (this.grabbing) this.grabbing = false;
+    else if (this.dragging) this.stopDragging();
     else if (this.holdingCart) this.releaseCart();
     else if (this.inHand !== 0) this.dropItem();
     else if (this.pickupSpot()) this.getItem();
-    else this.grabCart();
+    // [I] Punch rule: Space with nothing else to do punches.
+    else if (!this.grabCart()) this.punch();
   }
 
   private runCommand(c: Controls): void {
@@ -674,8 +837,15 @@ export class Player {
     this.prevCartPos.copy(this.cartPos);
     this.prevCartHeading = this.cartHeading;
 
+    if (this.stunTicks > 0) {
+      // Stunned by a punch: the controls do nothing while the knockback slides out.
+      this.stunTicks--;
+      c = { turn: 0, throttle: 0, action: false };
+    }
     this.runCommand(c);
     c = this.grabStep(c);
+    if (this.punchCooldown > 0) this.punchCooldown--;
+    if (c.punch) this.punch();
 
     const p = this.params;
     if (this.energy > 0) {
@@ -716,7 +886,9 @@ export class Player {
     this.prevSplashAngle = this.splashAngle;
     let current: EventObject | null = null;
     if (t.water) {
-      current = triggerAt(t.mvnc, this.pos);
+      if (this.slideOff > 0) this.slideOff--;
+      current = this.slideOff > 0 ? null : triggerAt(t.mvnc, this.pos);
+      if (current && this.slideStuck()) current = null;
       if (current) {
         if (!this.sliding || Math.random() < 0.05) this.events.push('splash');
         towards(this.vel, this.pos, current, SLIDE_SPEED);
@@ -745,11 +917,14 @@ export class Player {
       if (tele) this.teleport(tele, world);
     }
 
-    this.pos.x += this.vel.x;
-    this.pos.z += this.vel.y;
+    this.pos.x += this.vel.x + this.knockback.x;
+    this.pos.z += this.vel.y + this.knockback.y;
+    this.knockback.multiplyScalar(KNOCKBACK_DECAY);
+    if (this.knockback.lengthSq() < 1) this.knockback.set(0, 0);
     if (this.holdingCart && this.cart) this.placeCartInFront();
     // The floor-region edges stop the walker or the pushing body (character plus cart parts).
     this.sweepWalls(world, false);
+    this.dragCart(world);
 
     let floor = world.floorAt(this.pos.x, this.pos.z, this.pos.y);
     if (floor === null) {
@@ -803,7 +978,7 @@ export class Player {
       this.anim.rate = 0.5;
     } else if (this.actionTicks > 0) {
       this.actionTicks--;
-    } else if (this.sliding && this.clips.oops) {
+    } else if ((this.sliding || this.stunTicks > 0) && this.clips.oops) {
       this.anim.play(this.clips.oops);
       this.anim.rate = 1;
     } else if (this.throttleInput !== 0) {
@@ -871,6 +1046,8 @@ export class Player {
   }
 
   private tickFreeCart(world: CollisionWorld, friction: number): void {
+    // A stolen cart is moved by the player dragging it.
+    if (this.draggedBy) return;
     this.cartVel.multiplyScalar(friction);
     this.cartAngVel *= friction;
     // 0x427730: a free cart within 1100 of its own player stops.
@@ -980,6 +1157,11 @@ export class Player {
         this.cartSplash.rotation.y = this.prevCartSplashAngle + (this.cartSplashAngle - this.prevCartSplashAngle) * alpha;
         this.cartSplash.position.y = -1200 - this.cart.yOffset;
       }
+    }
+    // [I] Cart theft: the hands hold the dragged cart's handle.
+    if (this.dragging?.cart && !this.raceEnd) {
+      this.dragging.cart.object.updateMatrixWorld(true);
+      this.holdHandles(this.dragging.cart);
     }
   }
 

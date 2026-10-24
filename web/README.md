@@ -1,6 +1,6 @@
 # Mall Maniacs: browser reconstruction
 
-TypeScript + Vite + Three.js. It reads the **original game data** from `../original` at runtime and never modifies it. Every file format is parsed in the browser.
+TypeScript + Vite + Three.js. It reads the **original game data** from `../original` at runtime and never modifies it. Every file format is parsed in the browser. All game files are fetched once when the page loads (spinner with progress); levels then start without loading.
 
 ```sh
 npm install
@@ -49,6 +49,8 @@ The host page's **Lobby** row makes the lobby **Offentlig** (public: listed unde
 The server keeps every lobby in memory only (no database); a lobby disappears with its last player, and if the host leaves the next player becomes host. Up to 8 players. As in the original, a network race has only the people in the lobby (no computer players).
 
 The race runs in **lockstep**. The server is the 25 Hz clock: every 40 ms it sends one frame with each player's latest controls, and a Space/J/N press between frames is latched so it isn't lost. Every client simulates the same frames from the same seed (`src/game/random.ts`; game logic must use `simRandom`, never `Math.random`). Clients keep 2 frames (~80 ms) in hand against jitter and catch up at once when they fall behind. After the race the host's Enter takes everyone back to the waiting room. Esc leaves the lobby, and the slot of a player who left stands still. The HUD shows the lobby names, and a new best time is saved under the lobby name (no name-entry page). Every 25 ticks each client sends a state checksum; if two differ for the same tick, the server reports it and the HUD shows "Ur synk! Starta om loppet." Lockstep can't recover, so restart the race. The dev build also keeps the checksums in `window.mmNet`.
+
+**House rules** [I] (not in the original): in the waiting room the host's rules row cycles Originalregler / Slag / Vagnstöld / Slag och stöld (`rules` message, host only, sent with `start`). Slag: E/Ctrl, or Space with nothing else to do (no cart to grab, no item to take or throw), plays the throw animation; anyone within 1400 in front (±0.8 rad, |dy| ≤ 500) is knocked back (a push of 110/tick fading by 0.86, kept apart from the velocity, which the body physics clamps), stunned for 10 + 10 × the puncher's Styrka ticks (no control, s_oops plays) and drops their cart or the cart they are dragging; Throw-Hit (22) plays, 20-tick cooldown. Vagnstöld: Space walks to the nearest free cart within 3000, own or another's; another's is dragged 750 in front (its walls push back) until Space or a punch lets go, and its owner can't take it meanwhile. Input flag bit 8 carries an E/Ctrl punch.
 
 On localhost the intro pictures are skipped and the game starts on the main menu.
 

@@ -18,14 +18,14 @@ import type { GameConfig, LevelConfig } from './config';
 import { insideArea, parseEventObjects, type EventObject } from './events';
 import { GuideArrows } from './guide';
 import { NavGraph } from './navGraph';
-import { movementParams, Player, type CartRig, type MoveTriggers } from './player';
+import { movementParams, Player, type CartRig, type HouseRules, type MoveTriggers } from './player';
 import { Shop } from './shopping';
 import { GameMode, ModeRules } from './modes';
 import { ItemMarkers } from './markers';
 import { Projectiles } from './projectiles';
 import { MallScript } from './mallScript';
 import { StartSequence } from './startSequence';
-import { CHARACTER_STATS } from './setup';
+import { baseCharacter, characterStats, customCharacter, rigCustomCharacter } from './customCharacters';
 
 export interface Level {
   config: LevelConfig;
@@ -107,7 +107,14 @@ export async function loadLevel(
    * Network races: slots 0..humans-1 are people (no AI), `local` is the one on this machine.
    * Every client builds the same slots so the lockstep simulations match.
    */
-  seats: { humans: number; local: number; names?: string[] } = { humans: 1, local: 0 },
+  seats: {
+    humans: number;
+    local: number;
+    names?: string[];
+    rules?: HouseRules;
+    /** Per slot: Snabbhet, Styrka, Smidighet from the lobby, so custom characters simulate alike everywhere. */
+    stats?: Array<readonly [number, number, number]>;
+  } = { humans: 1, local: 0 },
 ): Promise<Level> {
   const level = cfg.levels[levelIndex];
   const dir = level.scenePath;
@@ -188,8 +195,14 @@ export async function loadLevel(
   };
 
   const makePlayer = (slot: number, charIndex: number, cartIndex: number | null): Player => {
-    const name = cfg.characters[charIndex % cfg.characters.length].objectName;
-    const model = buildMesh(chars, findMesh(chars, name), bank);
+    const custom = customCharacter(charIndex);
+    let name = cfg.characters[baseCharacter(charIndex) % cfg.characters.length].objectName;
+    let model = buildMesh(chars, findMesh(chars, name), bank);
+    if (custom) {
+      // [I] Custom characters are rigged onto their base character's skeleton.
+      model = rigCustomCharacter(custom, model);
+      name = custom.name.toUpperCase();
+    }
     const bones = model.bones ?? [];
     const clips = {
       stand: new AnimClip('stand', standAnm, bones.length),
@@ -209,9 +222,10 @@ export async function loadLevel(
       root.add(holder);
       cart = { object: holder, config: cc, yOffset: -lowestPoint(chars, cartMesh) };
     }
-    const [speed, strength, agility] = CHARACTER_STATS[charIndex % CHARACTER_STATS.length];
+    const [speed, strength, agility] = seats.stats?.[slot] ?? characterStats(charIndex);
     const player = new Player(name, slot, model.object, bones, new AnimPlayer(bones), clips, movementParams(cfg.master, speed, agility), cart);
     player.strength = strength;
+    player.character = charIndex;
     rules.setup(player, drawQuestion);
     player.triggers = triggers;
     if (triggers.water) {
@@ -237,7 +251,7 @@ export async function loadLevel(
   const players: Player[] = [];
   const npcs: Player[] = [];
   for (let slot = 0; slot < Math.min(starts.length, 8, characters.length); slot++) {
-    const p = makePlayer(slot, characters[slot] % cfg.characters.length, slot === local ? 1 : 0);
+    const p = makePlayer(slot, characters[slot], slot === local ? 1 : 0);
     spawnAt(p, slot);
     p.displayName = seats.names?.[slot] ?? p.name;
     players.push(p);
@@ -245,6 +259,10 @@ export async function loadLevel(
     else npcs.push(p);
   }
   const player = players[local];
+  for (const p of players) {
+    p.others = players;
+    if (seats.rules) p.rules = { ...seats.rules };
+  }
   const d = Math.max(0, Math.min(AI_SPEED.length - 1, difficulty));
   const ais = nav ? npcs.map((p) => new AiController(p, nav, shop, AI_SPEED[d], cfg.master.objUpdateTime, rules, AI_QUIZ_ACCURACY[d])) : [];
   // AI pickup pause: (4 - difficulty) * 24 ticks (difficulty 0..2 is the menu's Lätt..Svår).
