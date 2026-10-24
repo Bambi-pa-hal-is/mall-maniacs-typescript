@@ -1,0 +1,25 @@
+{
+  "name": "mall-maniacs-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/formats.test.ts tests/lobbies.test.ts",
+    "server": "node server/main.ts"
+  },
+  "dependencies": {
+    "three": "0.186.1",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/three": "0.186.0",
+    "@types/ws": "8.18.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.4"
+  }
+}

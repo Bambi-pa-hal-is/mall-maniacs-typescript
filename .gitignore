@@ -1,0 +1,20 @@
+# Copyrighted game data: supply your own copy (see README.md)
+/original/
+/music/
+/re/ghidra/
+/re/export/
+/re/export${d/
+/re/decoded/
+
+# Build output and dependencies
+node_modules/
+web/dist/
+__pycache__/
+*.pyc
+
+# Editor / OS clutter
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
